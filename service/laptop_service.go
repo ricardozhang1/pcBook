@@ -21,12 +21,14 @@ type LaptopService struct {
 	pd.UnimplementedLaptopServiceServer
 	laptopStore LaptopStore
 	imageStore ImageStore
+	ratingStore RatingStore
 }
 
-func NewLaptopService(laptopStore LaptopStore, imageStore ImageStore) *LaptopService {
+func NewLaptopService(laptopStore LaptopStore, imageStore ImageStore, ratingStore RatingStore) *LaptopService {
 	return &LaptopService{
 		laptopStore: laptopStore,
 		imageStore: imageStore,
+		ratingStore: ratingStore,
 	}
 }
 
@@ -166,6 +168,53 @@ func (server *LaptopService) UploadImage(stream pd.LaptopService_UploadImageServ
 	}
 
 	log.Printf("saved image with id: %s, size: %d", imageID, imageSize)
+	return nil
+}
+
+// RateLaptop is a bidirectional-streaming RPC that allows client to rate a stream of laptops
+// with a score, and returns a stream of average score for each of them
+func (server *LaptopService) RateLaptop(stream pd.LaptopService_RateLaptopServer) error  {
+	for {
+		if err := contextError(stream.Context()); err != nil {
+			return err
+		}
+
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return logErr(status.Errorf(codes.Unknown, "cannot receive stream request: %v", err))
+		}
+
+		laptopID := req.GetLaptopId()
+		score := req.GetScore()
+
+		log.Printf("receive a rate-laptop request: %s, score: %.2f", laptopID, score)
+
+		found, err := server.laptopStore.Find(laptopID)
+		if err != nil {
+			return logErr(status.Errorf(codes.Internal, "cannot find laptop: %v", err))
+		}
+		if found == nil {
+			return logErr(status.Errorf(codes.NotFound, "laptopId %s is not found", laptopID))
+		}
+
+		rating, err := server.ratingStore.Add(laptopID, score)
+		if err != nil {
+			return logErr(status.Errorf(codes.Internal, "cannot add rating to the score: %v", err))
+		}
+
+		res := &pd.RateLaptopResponse{
+			LaptopId: laptopID,
+			RateCount: rating.Count,
+			AverageScore: rating.Sum / float64(rating.Count),
+		}
+		if err := stream.Send(res); err != nil {
+			return logErr(status.Errorf(codes.Unknown, "cannot send stream response: %v", err))
+		}
+
+	}
 	return nil
 }
 

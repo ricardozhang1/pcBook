@@ -45,7 +45,7 @@ func (store *DiskImageStore) Save(laptopID string, imageType string, imageData b
 		return "", fmt.Errorf("cannot generate image id: %w", err)
 	}
 	// 构造image存储路径
-	imagePath := fmt.Sprintf("%s/%s%s", store.imageFolder, laptopID, imageType)
+	imagePath := fmt.Sprintf("%s/%s%s", store.imageFolder, imageId, imageType)
 
 	// 创建image文件
 	file, err := os.Create(imagePath)

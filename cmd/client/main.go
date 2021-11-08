@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -14,18 +13,21 @@ import (
 	"path/filepath"
 	"pc_book/pd"
 	"pc_book/sample"
+	"strings"
 	"time"
 )
 
 func createLaptop(laptopClient pd.LaptopServiceClient, laptop *pd.Laptop) {
+	// 构建请求
 	req := &pd.CreateLaptopRequest{
 		Laptop: laptop,
 	}
 
-	// set timeout
+	// set timeout 设置过期时间
 	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
 	defer cancel()
 
+	// 调用lapClient中的CreateLaptop方法
 	res, err := laptopClient.CreateLaptop(ctx, req)
 	if err != nil {
 		st, ok := status.FromError(err)
@@ -138,6 +140,59 @@ func uploadImage(laptopClient pd.LaptopServiceClient, laptopID string, imagePath
 
 }
 
+func rateLaptop(laptopClient pd.LaptopServiceClient, laptopIDs []string, scores []float64) error {
+	// 设置过期时间
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// 接收stream，进行传输 调用RateLaptop方法
+	stream, err := laptopClient.RateLaptop(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot rate laptop: %v", err)
+	}
+
+	// 创建Channel用于接收Response
+	waitResponse := make(chan error)
+	// goroutine to receive response
+	go func() {
+		for {
+			res, err := stream.Recv()
+			if err == io.EOF {
+				log.Print("no more responses")
+				waitResponse <- nil
+				break
+			}
+			if err != nil {
+				waitResponse <- fmt.Errorf("cannot receive stream response: %v", err)
+				return
+			}
+			log.Print("receive response: ", res)
+		}
+	}()
+
+	// send request 发送请求
+	for i, laptopID := range laptopIDs {
+		// 构建请求
+		req := &pd.RateLaptopRequest{
+			LaptopId: laptopID,
+			Score: scores[i],
+		}
+		// 发送请求
+		if err = stream.Send(req); err != nil {
+			return fmt.Errorf("cannot send stream request: %v - %v", err, stream.RecvMsg(nil))
+		}
+
+		log.Print("send request: ", req)
+	}
+	// 关闭stream流传输
+	if err = stream.CloseSend(); err != nil {
+		return fmt.Errorf("cannot close send: %v", err)
+	}
+
+	// 等待返回数据
+	err = <- waitResponse
+	return err
+}
+
 func testCreateLaptop(laptopClient pd.LaptopServiceClient) {
 	createLaptop(laptopClient, sample.NewLaptop())
 }
@@ -163,20 +218,52 @@ func testUploadImage(laptopClient pd.LaptopServiceClient) {
 	uploadImage(laptopClient, laptop.GetId(), "tmp/laptop.png")
 }
 
+func testRateLaptop(laptopClient pd.LaptopServiceClient) {
+	n := 3
+	laptopIDs := make([]string, n)
+	for i:=0; i<n; i++ {
+		laptop := sample.NewLaptop()
+		laptopIDs[i] = laptop.GetId()
+		createLaptop(laptopClient, laptop)
+	}
+
+	scores := make([]float64, n)
+	for {
+		fmt.Println("rate laptop (y/n)?")
+		var answer string
+		_, _ = fmt.Scan(&answer)
+
+		if strings.ToLower(answer) != "y" {
+			break
+		}
+		for i:=0; i<n; i++ {
+			// 返回随机数字
+			scores[i] = sample.RandomLaptopScore()
+		}
+		// 将创建的laptopID和随机生成的分数传递给rateLaptop
+		if err := rateLaptop(laptopClient, laptopIDs, scores); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func main() {
 	fmt.Println("grpc client")
 
 	//serverAddress := flag.String("address", "", "the server address")
-	serverAddress := "0.0.0.0:8089"
-	flag.Parse()
+	serverAddress := "0.0.0.0:8080"
+	//flag.Parse()
 	fmt.Printf("dial server %s", serverAddress)
 
+	// 获取一个ClientConn对象
 	conn, err := grpc.Dial(serverAddress, grpc.WithInsecure())
 	if err != nil {
 		log.Fatal("can not dail server: ", err)
 	}
 
+	// 将ClientConn传递给pd中的Client Service
+	// 返回的是一个laptopClient
 	laptopClient := pd.NewLaptopServiceClient(conn)
 
-	testUploadImage(laptopClient)
+	testRateLaptop(laptopClient)
 }
